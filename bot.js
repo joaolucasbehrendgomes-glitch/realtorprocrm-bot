@@ -422,4 +422,12 @@ bot.on('message', async (msg) => {
   }
 });
 
-console.log('🏠 JL CRM Bot rodando...');
+// Servidor HTTP necessário para o Render.com Web Service (plano gratuito)
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('🏠 REALTOR PRO CRM Bot está rodando!');
+}).listen(PORT, () => {
+  console.log(`🏠 REALTOR PRO CRM Bot rodando na porta ${PORT}...`);
+});
