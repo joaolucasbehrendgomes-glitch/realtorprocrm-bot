@@ -1,0 +1,13 @@
+{
+  "name": "jlcrm-bot",
+  "version": "1.0.0",
+  "description": "JL CRM Telegram Bot - João Lucas Jurere",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "@supabase/supabase-js": "^2.43.0"
+  }
+}
