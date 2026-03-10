@@ -14,12 +14,66 @@ const bot      = new TelegramBot(TOKEN, { polling: true });
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const userState = {};
 
-function isAllowed(msg) {
-  return !ALLOWED_USER || String(msg.from.id) === String(ALLOWED_USER);
+// Cache de usuários autenticados (chat_id → usuario)
+const _authCache = {};
+
+async function getUsuarioByChatId(chatId) {
+  const cid = String(chatId);
+  // Cache por 5 minutos
+  if(_authCache[cid] && (Date.now() - _authCache[cid]._ts) < 5*60*1000) {
+    return _authCache[cid];
+  }
+  try {
+    const { data, error } = await supabase
+      .from('usuarios')
+      .select('*')
+      .eq('telegram_chat_id', cid)
+      .eq('ativo', true)
+      .single();
+    if(error || !data) return null;
+    _authCache[cid] = { ...data, _ts: Date.now() };
+    return _authCache[cid];
+  } catch(e) { return null; }
 }
-function isAllowedCb(cb) {
-  return !ALLOWED_USER || String(cb.from.id) === String(ALLOWED_USER);
+
+async function isAllowed(msg) {
+  const chatId = String(msg.chat.id);
+  // Admin master sempre pode (fallback de segurança)
+  if(ALLOWED_USER && chatId === String(ALLOWED_USER)) return true;
+  const u = await getUsuarioByChatId(chatId);
+  return !!u;
 }
+
+async function isAllowedCb(cb) {
+  const chatId = String(cb.message.chat.id);
+  if(ALLOWED_USER && chatId === String(ALLOWED_USER)) return true;
+  const u = await getUsuarioByChatId(chatId);
+  return !!u;
+}
+
+// Busca do supabase filtrado pelo usuário logado
+async function sbForUser(table, chatId, extraQuery='') {
+  const cid = String(chatId);
+  // Admin master vê tudo
+  if(ALLOWED_USER && cid === String(ALLOWED_USER)) {
+    const { data } = await supabase.from(table).select('*' + (extraQuery ? ','+extraQuery : '')).order('created_at', {ascending:false}).limit(50);
+    return data || [];
+  }
+  const u = await getUsuarioByChatId(cid);
+  if(!u) return [];
+  if(u.nivel === 'admin') {
+    const { data } = await supabase.from(table).select('*').order('created_at',{ascending:false}).limit(50);
+    return data || [];
+  }
+  // Corretor/Gerente — só os próprios + sem corretor (legados)
+  const { data } = await supabase.from(table)
+    .select('*')
+    .or(`corretor_id.eq.${u.id},corretor_id.is.null`)
+    .order('created_at',{ascending:false})
+    .limit(50);
+  return data || [];
+}
+
 
 function gerarId() {
   return Date.now().toString() + Math.random().toString(36).slice(2, 7);
@@ -192,10 +246,32 @@ function botoesImovel(imovelId) {
 // START
 // =====================
 bot.onText(/\/start/, async (msg) => {
-  if (!isAllowed(msg)) return;
-  userState[msg.chat.id] = null;
-  await bot.sendMessage(msg.chat.id,
-    `🏠 *Olá, João Lucas!*\n\nBem-vindo ao *Realtor Pro CRM*.\n\n` +
+  const chatId = msg.chat.id;
+  // Verificar se usuário está cadastrado
+  const u = await getUsuarioByChatId(chatId);
+  const isAdmin = ALLOWED_USER && String(chatId) === String(ALLOWED_USER);
+  
+  if(!u && !isAdmin) {
+    // Não cadastrado — orientar
+    return bot.sendMessage(chatId,
+      `🏠 *Realtor Pro CRM*\n\n` +
+      `⚠️ Seu Telegram ainda não está vinculado ao sistema.\n\n` +
+      `*Como ativar:*\n` +
+      `1️⃣ Acesse o CRM no navegador\n` +
+      `2️⃣ Clique no seu nome (canto superior direito)\n` +
+      `3️⃣ Vá em *Minha Conta*\n` +
+      `4️⃣ Cole seu *ID do Telegram:* \`${chatId}\`\n` +
+      `5️⃣ Salve e volte aqui\n\n` +
+      `📋 *Seu ID do Telegram é:*\n\`${chatId}\`\n\n` +
+      `_Copie esse número e cole no CRM!_`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+  
+  userState[chatId] = null;
+  const nome = u ? u.nome.split(' ')[0] : 'João Lucas';
+  await bot.sendMessage(chatId,
+    `🏠 *Olá, ${nome}!*\n\nBem-vindo ao *Realtor Pro CRM*.\n\n` +
     `Use os *botões abaixo* ou 🎤 *mande áudio* — eu entendo e executo!\n\n` +
     `_Exemplos:_\n_"Novo cliente"_\n_"Listar imóveis"_\n_"Buscar Ricardo"_`,
     { parse_mode: 'Markdown', ...mainMenu }
@@ -206,16 +282,14 @@ bot.onText(/\/start/, async (msg) => {
 // LISTAR CLIENTES
 // =====================
 async function listarClientes(chatId, pagina = 0) {
-  const limit  = 8;
-  const offset = pagina * limit;
-  const { data, count } = await supabase
-    .from('clientes').select('*', { count: 'exact' })
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
+  const limit   = 8;
+  const offset  = pagina * limit;
+  const allData = await sbForUser('clientes', chatId);
+  const total   = allData.length;
+  const data    = allData.slice(offset, offset + limit);
 
   if (!data?.length) return sendMenu(chatId, '📋 Nenhum cliente cadastrado ainda.');
 
-  const total   = count || 0;
   const temProx = offset + limit < total;
   const temAnt  = pagina > 0;
 
@@ -242,7 +316,7 @@ async function listarClientes(chatId, pagina = 0) {
 }
 
 bot.onText(/📋 Listar Clientes|\/listar/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   await listarClientes(msg.chat.id, 0);
 });
 
@@ -271,7 +345,7 @@ async function listarImoveis(chatId) {
 }
 
 bot.onText(/🏘 Ver Imóveis|\/imoveis/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   await listarImoveis(msg.chat.id);
 });
 
@@ -279,8 +353,9 @@ bot.onText(/🏘 Ver Imóveis|\/imoveis/, async (msg) => {
 // BUSCAR CLIENTE
 // =====================
 async function buscarCliente(chatId, query) {
-  const { data } = await supabase
-    .from('clientes').select('*').ilike('nome', `%${query}%`).limit(8);
+  const allData = await sbForUser('clientes', chatId);
+  const q = query.toLowerCase();
+  const data = allData.filter(c => (c.nome||'').toLowerCase().includes(q)).slice(0,8);
 
   if (!data?.length) return sendMenu(chatId, `🔍 Nenhum cliente encontrado para "*${query}*".`);
 
@@ -296,7 +371,7 @@ async function buscarCliente(chatId, query) {
 }
 
 bot.onText(/🔍 Buscar Cliente|\/buscar/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   userState[msg.chat.id] = { acao: 'buscar', step: 'query' };
   await bot.sendMessage(msg.chat.id, '🔍 *Buscar Cliente*\n\nDigite o nome:', {
     parse_mode: 'Markdown',
@@ -324,7 +399,7 @@ async function proximasVisitas(chatId) {
 }
 
 bot.onText(/🗓 Próximas Visitas|\/visitas/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   await proximasVisitas(msg.chat.id);
 });
 
@@ -368,7 +443,7 @@ async function resumoDia(chatId) {
 }
 
 bot.onText(/📊 Resumo do Dia|\/resumo/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   await resumoDia(msg.chat.id);
 });
 
@@ -376,7 +451,7 @@ bot.onText(/📊 Resumo do Dia|\/resumo/, async (msg) => {
 // CALLBACKS INLINE
 // =====================
 bot.on('callback_query', async (cb) => {
-  if (!isAllowedCb(cb)) return;
+  if (!await isAllowedCb(cb)) return;
   const chatId = cb.message.chat.id;
   const msgId  = cb.message.message_id;
   const data   = cb.data;
@@ -613,7 +688,7 @@ bot.on('callback_query', async (cb) => {
 // ÁUDIO 🎤
 // =====================
 bot.on('voice', async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   const chatId = msg.chat.id;
   if (!GROQ_KEY) return bot.sendMessage(chatId, '⚠️ Áudio não configurado.', mainMenu);
 
@@ -666,7 +741,7 @@ async function iniciarNovoCliente(chatId) {
     { parse_mode: 'Markdown', reply_markup: { keyboard: [['❌ Cancelar']], resize_keyboard: true } }
   );
 }
-bot.onText(/👤 Novo Cliente|\/novo/, async (msg) => { if (!isAllowed(msg)) return; await iniciarNovoCliente(msg.chat.id); });
+bot.onText(/👤 Novo Cliente|\/novo/, async (msg) => { if (!await isAllowed(msg)) return; await iniciarNovoCliente(msg.chat.id); });
 
 async function iniciarNovoImovel(chatId) {
   userState[chatId] = { acao: 'novo_imovel', step: 'nome', data: {} };
@@ -675,7 +750,7 @@ async function iniciarNovoImovel(chatId) {
     { parse_mode: 'Markdown', reply_markup: { keyboard: [['❌ Cancelar']], resize_keyboard: true } }
   );
 }
-bot.onText(/🏠 Novo Imóvel|\/imovel$/, async (msg) => { if (!isAllowed(msg)) return; await iniciarNovoImovel(msg.chat.id); });
+bot.onText(/🏠 Novo Imóvel|\/imovel$/, async (msg) => { if (!await isAllowed(msg)) return; await iniciarNovoImovel(msg.chat.id); });
 
 async function iniciarVisita(chatId) {
   const { data: clientes } = await supabase.from('clientes').select('id, nome').order('nome').limit(20);
@@ -688,7 +763,7 @@ async function iniciarVisita(chatId) {
     reply_markup: { keyboard, resize_keyboard: true }
   });
 }
-bot.onText(/📅 Agendar Visita|\/visita$/, async (msg) => { if (!isAllowed(msg)) return; await iniciarVisita(msg.chat.id); });
+bot.onText(/📅 Agendar Visita|\/visita$/, async (msg) => { if (!await isAllowed(msg)) return; await iniciarVisita(msg.chat.id); });
 
 // =====================
 // PROCESSAR WIZARD
@@ -773,10 +848,13 @@ async function processarTexto(chatId, text, msg) {
     }
     if (state.step === 'obs') {
       state.data.obs = pular ? null : text;
+      const _uTel = await getUsuarioByChatId(chatId);
       const nc = {
         id: gerarId(), nome: state.data.nome, telefone: state.data.telefone||null,
         status: state.data.status||'Novo Lead', local: state.data.local||null,
         imovel_atual: state.data.imovel_atual||null, obs: state.data.obs||null,
+        corretor_id:   _uTel ? _uTel.id   : null,
+        corretor_nome: _uTel ? _uTel.nome  : null,
         sinais: [], contatos: [],
         created_at: new Date().toISOString(), last_edit: new Date().toISOString(),
       };
@@ -961,13 +1039,13 @@ function iniciarAgendador() {
 }
 
 bot.onText(/\/lembretes|🔔 Lembretes/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   await bot.sendMessage(msg.chat.id, '🔍 Verificando leads...', { parse_mode: 'Markdown' });
   await enviarLembretes(msg.chat.id);
 });
 
 bot.onText(/\/visitas_hoje/, async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   await enviarAvisoVisitas(msg.chat.id);
 });
 
@@ -975,7 +1053,7 @@ bot.onText(/\/visitas_hoje/, async (msg) => {
 // HANDLER GERAL
 // =====================
 bot.on('message', async (msg) => {
-  if (!isAllowed(msg)) return;
+  if (!await isAllowed(msg)) return;
   if (msg.voice) return;
   const chatId = msg.chat.id, text = msg.text || '';
   const cmds = [
@@ -990,6 +1068,23 @@ bot.on('message', async (msg) => {
 // =====================
 // COMANDOS
 // =====================
+// Comando /meuid — mostra o chat ID do usuário
+bot.onText(/\/meuid/, async (msg) => {
+  const chatId = msg.chat.id;
+  const u = await getUsuarioByChatId(chatId);
+  if(u) {
+    bot.sendMessage(chatId,
+      `✅ *Seu Telegram já está vinculado!*\n\n👤 ${u.nome}\n🔑 Nível: ${u.nivel}\n📋 ID: \`${chatId}\``,
+      { parse_mode: 'Markdown' }
+    );
+  } else {
+    bot.sendMessage(chatId,
+      `📋 *Seu ID do Telegram é:*\n\n\`${chatId}\`\n\n_Cole esse número no CRM em Minha Conta → Telegram Chat ID_`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
 bot.setMyCommands([
   { command: 'start',        description: '🏠 Menu principal' },
   { command: 'novo',         description: '👤 Novo cliente' },
@@ -1002,6 +1097,7 @@ bot.setMyCommands([
   { command: 'buscar',       description: '🔍 Buscar cliente' },
   { command: 'lembretes',    description: '🔔 Leads sem contato' },
   { command: 'visitas_hoje', description: '📅 Visitas hoje/amanhã' },
+  { command: 'meuid',        description: '🔑 Ver meu ID do Telegram' },
 ]);
 
 iniciarAgendador();
