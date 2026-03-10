@@ -1,13 +1,12 @@
 {
-  "name": "jlcrm-bot",
-  "version": "1.0.0",
-  "description": "JL CRM Telegram Bot - João Lucas Jurere",
+  "name": "realtorprocrm-bot",
+  "version": "2.0.0",
   "main": "bot.js",
-  "scripts": {
-    "start": "node bot.js"
-  },
+  "scripts": { "start": "node bot.js" },
   "dependencies": {
-    "node-telegram-bot-api": "^0.66.0",
-    "@supabase/supabase-js": "^2.43.0"
+    "node-telegram-bot-api": "^0.64.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "node-fetch": "^2.7.0",
+    "form-data": "^4.0.0"
   }
 }
