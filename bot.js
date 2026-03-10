@@ -65,10 +65,10 @@ async function sbForUser(table, chatId, extraQuery='') {
     const { data } = await supabase.from(table).select('*').order('created_at',{ascending:false}).limit(50);
     return data || [];
   }
-  // Corretor/Gerente — só os próprios + sem corretor (legados)
+  // Corretor/Gerente — APENAS os próprios clientes
   const { data } = await supabase.from(table)
     .select('*')
-    .or(`corretor_id.eq.${u.id},corretor_id.is.null`)
+    .eq('corretor_id', u.id)
     .order('created_at',{ascending:false})
     .limit(50);
   return data || [];
