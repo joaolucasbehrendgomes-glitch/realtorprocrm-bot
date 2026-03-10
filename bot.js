@@ -449,13 +449,13 @@ async function processarTexto(chatId, text, msg) {
       state.data.descricao = pular ? null : text;
       const novoImovel = {
         id: gerarId(),
-        nome: state.data.nome,
+        nome: state.data.nome || null,
         tipo: state.data.tipo || null,
         bairro: state.data.bairro || null,
         valor: state.data.valor || null,
         dorms: state.data.dorms || null,
         area: state.data.area || null,
-        descricao: state.data.descricao || null,
+        obs: state.data.descricao || null,
         created_at: new Date().toISOString(),
       };
       const { error } = await supabase.from('imoveis').insert([novoImovel]);
