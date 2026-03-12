@@ -80,10 +80,10 @@ function gerarId() {
 }
 
 const STATUS_EMOJI = {
-  'Novo Lead': '🔵', 'Em Atendimento': '🟡', 'Ajustes de viabilidade': '🟠',
-  'Em Proposta': '🔴', 'Negociação': '🟣', 'Venda Fechada': '🟢', 'Perdido': '⚫'
+  'Novo Lead': '🔵', 'Em Atendimento': '🟡',
+  'Em Proposta': '🟣', 'Venda Fechada': '🟢', 'Perdido': '⚫'
 };
-const STATUS_LIST = ['Novo Lead','Em Atendimento','Ajustes de viabilidade','Em Proposta','Negociação','Venda Fechada','Perdido'];
+const STATUS_LIST = ['Novo Lead','Em Atendimento','Em Proposta','Venda Fechada','Perdido'];
 
 function diasSemContato(c) {
   const ref = c.last_edit || c.created_at;
@@ -91,18 +91,50 @@ function diasSemContato(c) {
   return Math.floor((Date.now() - new Date(ref).getTime()) / 86400000);
 }
 
+// Score simplificado para exibição no bot
+function calcScoreBot(c) {
+  const s = c.status, dias = diasSemContato(c);
+  if(s === 'Venda Fechada') return 100;
+  if(s === 'Perdido') return 0;
+  let score = ({
+    'Novo Lead': 20, 'Em Atendimento': 50, 'Em Proposta': 80
+  }[s] || 20);
+  if(c.potencial === 'Forte') score += 10;
+  else if(c.potencial === 'Fraco') score -= 10;
+  if(dias >= 21) score -= 20;
+  else if(dias >= 14) score -= 10;
+  else if(dias >= 7) score -= 5;
+  const si = c.sinais || [];
+  if(si.includes('Perguntou valor final') || si.includes('Falou de prazo')) score += 8;
+  return Math.max(0, Math.min(100, score));
+}
+
+function calcPrioBot(c) {
+  const s = c.status, dias = diasSemContato(c);
+  if(s === 'Venda Fechada' || s === 'Perdido') return null;
+  if(s === 'Em Proposta') return '🔥 Atacar agora';
+  if(dias >= 21) return '🔥 Atacar agora';
+  if(dias >= 14 && s === 'Em Atendimento') return '🔥 Atacar agora';
+  if(dias >= 7) return '🟡 Acompanhar';
+  return null;
+}
+
 function fmtCliente(c) {
   const emoji = STATUS_EMOJI[c.status] || '⚪';
   const dias  = diasSemContato(c);
+  const score = calcScoreBot(c);
+  const prio  = calcPrioBot(c);
   let txt = `👤 *${c.nome || 'Sem nome'}* ${emoji}\n`;
+  if (c.status)       txt += `📊 ${c.status}`;
+  if (prio)           txt += ` · ${prio}`;
+  txt += '\n';
+  txt += `⚡ Score: *${score}* · 🕐 ${dias}d sem atualizar\n`;
   if (c.telefone)     txt += `📞 ${c.telefone}\n`;
-  if (c.email)        txt += `✉️ ${c.email}\n`;
   if (c.local)        txt += `📍 ${c.local}\n`;
   if (c.imovel_atual) txt += `🏠 ${c.imovel_atual}\n`;
-  if (c.status)       txt += `📊 ${c.status}\n`;
   if (c.potencial)    txt += `💪 Potencial: ${c.potencial}\n`;
   if (c.momento)      txt += `⏱ Momento: ${c.momento}\n`;
-  txt += `🕐 ${dias}d sem atualizar\n`;
+  if (c.email)        txt += `✉️ ${c.email}\n`;
   if (c.obs)          txt += `💡 _${c.obs}_\n`;
   return txt;
 }
@@ -271,9 +303,21 @@ bot.onText(/\/start/, async (msg) => {
   userState[chatId] = null;
   const nome = u ? u.nome.split(' ')[0] : 'João Lucas';
   await bot.sendMessage(chatId,
-    `🏠 *Olá, ${nome}!*\n\nBem-vindo ao *Realtor Pro CRM*.\n\n` +
-    `Use os *botões abaixo* ou 🎤 *mande áudio* — eu entendo e executo!\n\n` +
-    `_Exemplos:_\n_"Novo cliente"_\n_"Listar imóveis"_\n_"Buscar Ricardo"_`,
+    `🏠 *Olá, ${nome}!* Bem-vindo ao *Realtor Pro CRM*.\n\n` +
+    `📋 *Comandos disponíveis:*\n` +
+    `/clientes — listar meus clientes\n` +
+    `/atacar — leads para atacar agora 🔥\n` +
+    `/novos — novos leads 🔵\n` +
+    `/proposta — leads em proposta 🟣\n` +
+    `/fechados — vendas fechadas 🟢\n` +
+    `/perdidos — leads perdidos ⚫\n` +
+    `/visitas — próximas visitas 📅\n` +
+    `/resumo — resumo do dia 📊\n` +
+    `/buscar — buscar cliente 🔍\n` +
+    `/lembretes — leads sem contato 🔔\n` +
+    `/meuid — seu ID do Telegram 🔑\n` +
+    `/ajuda — esta mensagem\n\n` +
+    `Use os *botões abaixo* ou 🎤 *mande áudio*!`,
     { parse_mode: 'Markdown', ...mainMenu }
   );
 });
@@ -818,11 +862,11 @@ async function processarTexto(chatId, text, msg) {
       state.step = 'status';
       return bot.sendMessage(chatId, 'Qual o *status* do lead?', {
         parse_mode: 'Markdown',
-        reply_markup: { keyboard: [['🔵 Novo Lead','🟡 Em Atendimento'],['🟠 Ajustes','🔴 Em Proposta'],['❌ Cancelar']], resize_keyboard: true }
+        reply_markup: { keyboard: [['🔵 Novo Lead','🟡 Em Atendimento'],['🟣 Em Proposta','🟢 Venda Fechada'],['❌ Cancelar']], resize_keyboard: true }
       });
     }
     if (state.step === 'status') {
-      const smap = { '🔵 Novo Lead':'Novo Lead','🟡 Em Atendimento':'Em Atendimento','🟠 Ajustes':'Ajustes de viabilidade','🔴 Em Proposta':'Em Proposta' };
+      const smap = { '🔵 Novo Lead':'Novo Lead','🟡 Em Atendimento':'Em Atendimento','🟣 Em Proposta':'Em Proposta','🟢 Venda Fechada':'Venda Fechada' };
       state.data.status = smap[text] || text || 'Novo Lead';
       state.step = 'local';
       return bot.sendMessage(chatId, 'Qual a *localização de interesse*?\n_Pode responder por áudio_ 🎤', {
@@ -994,7 +1038,7 @@ async function enviarLembretes(chatId) {
       const dias = diasSemContato(c);
       if (dias >= ALERTA_FRIO) frios.push({...c,dias});
       else if (dias >= ALERTA_AVISO) avisos.push({...c,dias});
-      else if (dias >= ALERTA_URGENTE && ['Em Proposta','Negociação'].includes(c.status)) urgentes.push({...c,dias});
+      else if (dias >= ALERTA_URGENTE && c.status === 'Em Proposta') urgentes.push({...c,dias});
     });
     if (!urgentes.length && !avisos.length && !frios.length) {
       if (chatId) bot.sendMessage(chatId, '✅ *Nenhum lead precisando de atenção!* 💪', { parse_mode: 'Markdown', ...mainMenu });
@@ -1050,6 +1094,148 @@ bot.onText(/\/visitas_hoje/, async (msg) => {
 });
 
 // =====================
+// NOVOS COMANDOS CRM
+// =====================
+
+// Listar clientes por status — função reutilizável
+async function listarPorStatus(chatId, status, label) {
+  const allData = await sbForUser('clientes', chatId);
+  const data = allData
+    .filter(c => c.status === status)
+    .sort((a,b) => diasSemContato(b) - diasSemContato(a))
+    .slice(0, 10);
+  const total = allData.filter(c => c.status === status).length;
+
+  if(!data.length) return bot.sendMessage(chatId,
+    `${STATUS_EMOJI[status]||'⚪'} Nenhum cliente com status *${status}*.`,
+    { parse_mode: 'Markdown', ...mainMenu }
+  );
+
+  let txt = `${STATUS_EMOJI[status]||'⚪'} *${label}*`;
+  if(total > 10) txt += ` (mostrando 10 de ${total})`;
+  txt += '\n\n';
+  txt += data.map((c, i) => {
+    const dias = diasSemContato(c);
+    const score = calcScoreBot(c);
+    return `${i+1}. *${c.nome||'—'}*\n   ⚡${score} · 🕐${dias}d · 📍${c.local||'—'} · 🏠${c.imovel_atual||'—'}`;
+  }).join('\n\n');
+
+  const inline = data.map(c => ([{
+    text: `👤 ${c.nome||'—'} ${STATUS_EMOJI[c.status]||''}`,
+    callback_data: `ver:${c.id}`
+  }]));
+
+  return bot.sendMessage(chatId, txt, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: inline }
+  });
+}
+
+// /clientes — lista todos os clientes do corretor (alias de /listar)
+bot.onText(/\/clientes/, async (msg) => {
+  if(!await isAllowed(msg)) return;
+  await listarClientes(msg.chat.id, 0);
+});
+
+// /novos — Novo Lead
+bot.onText(/\/novos/, async (msg) => {
+  if(!await isAllowed(msg)) return;
+  await listarPorStatus(msg.chat.id, 'Novo Lead', 'Novos Leads');
+});
+
+// /proposta — Em Proposta
+bot.onText(/\/proposta/, async (msg) => {
+  if(!await isAllowed(msg)) return;
+  await listarPorStatus(msg.chat.id, 'Em Proposta', 'Em Proposta');
+});
+
+// /fechados — Venda Fechada
+bot.onText(/\/fechados/, async (msg) => {
+  if(!await isAllowed(msg)) return;
+  await listarPorStatus(msg.chat.id, 'Venda Fechada', 'Vendas Fechadas');
+});
+
+// /perdidos — Perdido
+bot.onText(/\/perdidos/, async (msg) => {
+  if(!await isAllowed(msg)) return;
+  await listarPorStatus(msg.chat.id, 'Perdido', 'Leads Perdidos');
+});
+
+// /atacar — leads com prioridade "Atacar agora"
+bot.onText(/\/atacar/, async (msg) => {
+  if(!await isAllowed(msg)) return;
+  const chatId = msg.chat.id;
+  const allData = await sbForUser('clientes', chatId);
+
+  const atacar = allData
+    .filter(c => calcPrioBot(c) === '🔥 Atacar agora')
+    .map(c => ({ ...c, _dias: diasSemContato(c), _score: calcScoreBot(c) }))
+    .sort((a,b) => b._score - a._score)
+    .slice(0, 10);
+
+  const total = allData.filter(c => calcPrioBot(c) === '🔥 Atacar agora').length;
+
+  if(!atacar.length) return bot.sendMessage(chatId,
+    '✅ *Nenhum lead urgente no momento!* 🎉\nTodos os leads estão em dia.',
+    { parse_mode: 'Markdown', ...mainMenu }
+  );
+
+  let txt = `🔥 *Leads para Atacar Agora*`;
+  if(total > 10) txt += ` (top 10 de ${total})`;
+  txt += '\n\n';
+  txt += atacar.map((c, i) => {
+    const wl = c.telefone ? `https://wa.me/55${c.telefone.replace(/\D/g,'')}` : null;
+    return (
+      `${i+1}. *${c.nome||'—'}* ${STATUS_EMOJI[c.status]||''}\n` +
+      `   ⚡Score: ${c._score} · 🕐${c._dias}d · ${c.status}\n` +
+      `   📍${c.local||'—'} · 🏠${c.imovel_atual||'—'}` +
+      (wl ? `\n   [💬 WhatsApp](${wl})` : '')
+    );
+  }).join('\n\n');
+
+  const inline = atacar.map(c => ([{
+    text: `👤 ${c.nome||'—'} — ${c._dias}d sem contato`,
+    callback_data: `ver:${c.id}`
+  }]));
+
+  return bot.sendMessage(chatId, txt, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: inline }
+  });
+});
+
+// /ajuda — lista de comandos
+bot.onText(/\/ajuda/, async (msg) => {
+  const chatId = msg.chat.id;
+  await bot.sendMessage(chatId,
+    `🏠 *Realtor Pro CRM — Comandos*\n\n` +
+    `👤 *Clientes*\n` +
+    `/clientes — listar meus clientes\n` +
+    `/atacar — leads para atacar agora 🔥\n` +
+    `/novos — novos leads 🔵\n` +
+    `/proposta — leads em proposta 🟣\n` +
+    `/fechados — vendas fechadas 🟢\n` +
+    `/perdidos — leads perdidos ⚫\n` +
+    `/buscar — buscar por nome\n\n` +
+    `📅 *Agenda*\n` +
+    `/visitas — próximas visitas\n` +
+    `/visita — agendar nova visita\n\n` +
+    `📊 *Relatórios*\n` +
+    `/resumo — resumo do dia\n` +
+    `/lembretes — leads sem contato\n\n` +
+    `🔧 *Cadastro*\n` +
+    `/novo — cadastrar cliente\n` +
+    `/imovel — cadastrar imóvel\n` +
+    `/imoveis — portfólio de imóveis\n\n` +
+    `⚙️ *Conta*\n` +
+    `/meuid — seu ID do Telegram\n` +
+    `/ajuda — esta mensagem\n\n` +
+    `_Use os botões abaixo ou 🎤 mande áudio!_`,
+    { parse_mode: 'Markdown', ...mainMenu }
+  );
+});
+
+// =====================
 // HANDLER GERAL
 // =====================
 bot.on('message', async (msg) => {
@@ -1057,7 +1243,9 @@ bot.on('message', async (msg) => {
   if (msg.voice) return;
   const chatId = msg.chat.id, text = msg.text || '';
   const cmds = [
-    '/start','/novo','/imovel','/imoveis','/listar','/visita','/visitas','/resumo','/buscar','/lembretes','/visitas_hoje',
+    '/start','/novo','/imovel','/imoveis','/listar','/clientes','/visita','/visitas','/resumo',
+    '/buscar','/lembretes','/visitas_hoje','/atacar','/novos','/proposta','/fechados','/perdidos',
+    '/ajuda','/meuid',
     '👤 Novo Cliente','🏠 Novo Imóvel','📋 Listar Clientes','🏘 Ver Imóveis',
     '📅 Agendar Visita','🗓 Próximas Visitas','📊 Resumo do Dia','🔔 Lembretes','🔍 Buscar Cliente'
   ];
@@ -1087,17 +1275,22 @@ bot.onText(/\/meuid/, async (msg) => {
 
 bot.setMyCommands([
   { command: 'start',        description: '🏠 Menu principal' },
-  { command: 'novo',         description: '👤 Novo cliente' },
-  { command: 'imovel',       description: '🏠 Novo imóvel' },
-  { command: 'listar',       description: '📋 Listar clientes' },
-  { command: 'imoveis',      description: '🏘 Ver portfólio' },
-  { command: 'visita',       description: '📅 Agendar visita' },
-  { command: 'visitas',      description: '🗓 Próximas visitas' },
-  { command: 'resumo',       description: '📊 Resumo do dia' },
+  { command: 'clientes',     description: '📋 Meus clientes' },
+  { command: 'atacar',       description: '🔥 Leads para atacar agora' },
+  { command: 'novos',        description: '🔵 Novos leads' },
+  { command: 'proposta',     description: '🟣 Leads em proposta' },
+  { command: 'fechados',     description: '🟢 Vendas fechadas' },
+  { command: 'perdidos',     description: '⚫ Leads perdidos' },
   { command: 'buscar',       description: '🔍 Buscar cliente' },
+  { command: 'visitas',      description: '🗓 Próximas visitas' },
+  { command: 'visita',       description: '📅 Agendar visita' },
+  { command: 'resumo',       description: '📊 Resumo do dia' },
   { command: 'lembretes',    description: '🔔 Leads sem contato' },
-  { command: 'visitas_hoje', description: '📅 Visitas hoje/amanhã' },
+  { command: 'novo',         description: '👤 Cadastrar cliente' },
+  { command: 'imovel',       description: '🏠 Cadastrar imóvel' },
+  { command: 'imoveis',      description: '🏘 Ver portfólio' },
   { command: 'meuid',        description: '🔑 Ver meu ID do Telegram' },
+  { command: 'ajuda',        description: '❓ Lista de comandos' },
 ]);
 
 iniciarAgendador();
@@ -1107,6 +1300,26 @@ iniciarAgendador();
 // =====================
 const http = require('http');
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => { res.writeHead(200); res.end('🏠 REALTOR PRO CRM Bot rodando!'); }).listen(PORT, () => {
+
+http.createServer((req, res) => {
+  // /ping — endpoint para health check e manter servidor acordado
+  if(req.url === '/ping') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    return res.end('pong');
+  }
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('🏠 REALTOR PRO CRM Bot rodando!');
+}).listen(PORT, () => {
   console.log(`🏠 Bot rodando na porta ${PORT}...`);
 });
+
+// =====================
+// ANTI-HIBERNAÇÃO
+// =====================
+// Self-ping a cada 14 minutos para evitar que o servidor durma (Render free tier)
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+setInterval(() => {
+  fetch(`${SELF_URL}/ping`)
+    .then(() => console.log(`[${new Date().toLocaleTimeString('pt-BR')}] 💓 self-ping ok`))
+    .catch(e => console.warn('self-ping erro:', e.message));
+}, 14 * 60 * 1000); // 14 minutos
