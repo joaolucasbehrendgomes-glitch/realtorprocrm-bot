@@ -25,7 +25,7 @@ async function getUsuarioByChatId(chatId) {
   }
   try {
     const { data, error } = await supabase
-      .from('usuarios')
+      .from('profiles')
       .select('*')
       .eq('telegram_chat_id', cid)
       .eq('ativo', true)
@@ -65,19 +65,16 @@ async function sbForUser(table, chatId, extraQuery='') {
     const { data } = await supabase.from(table).select('*').order('created_at',{ascending:false}).limit(50);
     return data || [];
   }
-  // Corretor/Gerente — APENAS os próprios clientes
+  // Corretor/Gerente — APENAS os próprios registros
   const { data } = await supabase.from(table)
     .select('*')
-    .eq('corretor_id', u.id)
+    .eq('user_id', u.id)
     .order('created_at',{ascending:false})
     .limit(50);
   return data || [];
 }
 
 
-function gerarId() {
-  return Date.now().toString() + Math.random().toString(36).slice(2, 7);
-}
 
 const STATUS_EMOJI = {
   'Novo Lead': '🔵', 'Em Atendimento': '🟡',
@@ -86,7 +83,7 @@ const STATUS_EMOJI = {
 const STATUS_LIST = ['Novo Lead','Em Atendimento','Em Proposta','Venda Fechada','Perdido'];
 
 function diasSemContato(c) {
-  const ref = c.last_edit || c.created_at;
+  const ref = c.updated_at || c.created_at;
   if (!ref) return 0;
   return Math.floor((Date.now() - new Date(ref).getTime()) / 86400000);
 }
@@ -541,7 +538,7 @@ bot.on('callback_query', async (cb) => {
     const parts    = data.split(':');
     const id       = parts[1];
     const novoSt   = parts.slice(2).join(':');
-    const { error } = await supabase.from('clientes').update({ status: novoSt, last_edit: new Date().toISOString() }).eq('id', id);
+    const { error } = await supabase.from('clientes').update({ status: novoSt }).eq('id', id);
     if (error) return bot.sendMessage(chatId, `❌ Erro: ${error.message}`);
     await bot.deleteMessage(chatId, msgId).catch(() => {});
     const { data: c } = await supabase.from('clientes').select('*').eq('id', id).single();
@@ -824,7 +821,7 @@ async function processarTexto(chatId, text, msg) {
   // REGISTRAR CONTATO
   if (state.acao === 'registrar_contato' && state.step === 'obs') {
     const { clienteId, tipo } = state.data;
-    await supabase.from('clientes').update({ last_edit: new Date().toISOString() }).eq('id', clienteId);
+    await supabase.from('clientes').update({ updated_at: new Date().toISOString() }).eq('id', clienteId);
     const tipoLimpo = tipo.replace(/[^\w\s]/g,'').trim();
     return sendMenu(chatId, `✅ *${tipoLimpo}* registrado!${(!pular && text) ? '\n💡 '+text : ''}`);
   }
@@ -832,7 +829,7 @@ async function processarTexto(chatId, text, msg) {
   // EDITAR CAMPO CLIENTE
   if (state.acao === 'editar_campo' && state.step === 'valor') {
     const { clienteId, field } = state.data;
-    const { error } = await supabase.from('clientes').update({ [field]: text, last_edit: new Date().toISOString() }).eq('id', clienteId);
+    const { error } = await supabase.from('clientes').update({ [field]: text }).eq('id', clienteId);
     if (error) return sendMenu(chatId, `❌ Erro: ${error.message}`);
     const { data: c } = await supabase.from('clientes').select('*').eq('id', clienteId).single();
     return bot.sendMessage(chatId, `✅ *Atualizado!*\n\n${fmtCliente(c)}`, { parse_mode: 'Markdown', ...botoesCliente(c.id, c.telefone) });
@@ -894,16 +891,15 @@ async function processarTexto(chatId, text, msg) {
       state.data.obs = pular ? null : text;
       const _uTel = await getUsuarioByChatId(chatId);
       const nc = {
-        id: gerarId(), nome: state.data.nome, telefone: state.data.telefone||null,
+        nome: state.data.nome, telefone: state.data.telefone||null,
         status: state.data.status||'Novo Lead', local: state.data.local||null,
         imovel_atual: state.data.imovel_atual||null, obs: state.data.obs||null,
-        corretor_id:   _uTel ? _uTel.id   : null,
-        corretor_nome: _uTel ? _uTel.nome  : null,
+        user_id: _uTel ? _uTel.id : null,
         sinais: [], contatos: [],
-        created_at: new Date().toISOString(), last_edit: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       };
       const { error } = await supabase.from('clientes').insert([nc]);
-      if (error) return sendMenu(chatId, `❌ Erro ao salvar: ${error.message}`);
+      if (error) return sendMenu(chatId, `❌ Erro ao salvar cliente: ${error.message}`);
       return sendMenu(chatId, `✅ *Cliente cadastrado!*\n\n👤 ${nc.nome}\n📞 ${nc.telefone||'—'}\n${STATUS_EMOJI[nc.status]||''} ${nc.status}\n📍 ${nc.local||'—'}`);
     }
   }
@@ -952,14 +948,16 @@ async function processarTexto(chatId, text, msg) {
     }
     if (state.step === 'obs') {
       state.data.obs = pular ? null : text;
+      const _uIm = await getUsuarioByChatId(chatId);
       const ni = {
-        id: gerarId(), nome: state.data.nome||null, tipo: state.data.tipo||null,
+        nome: state.data.nome||null, tipo: state.data.tipo||null,
         bairro: state.data.bairro||null, valor: state.data.valor||null,
         dorms: state.data.dorms||null, obs: state.data.obs||null,
+        user_id: _uIm ? _uIm.id : null,
         created_at: new Date().toISOString(),
       };
       const { error } = await supabase.from('imoveis').insert([ni]);
-      if (error) return sendMenu(chatId, `❌ Erro ao salvar: ${error.message}`);
+      if (error) return sendMenu(chatId, `❌ Erro ao salvar imóvel: ${error.message}`);
       return sendMenu(chatId, `✅ *Imóvel cadastrado!*\n\n🏠 ${ni.nome}\n📍 ${ni.bairro||'—'}\nTipo: ${ni.tipo||'—'}\n💰 R$ ${ni.valor||'—'}\n🛏 ${ni.dorms||'—'}`);
     }
   }
@@ -1003,12 +1001,14 @@ async function processarTexto(chatId, text, msg) {
     }
     if (state.step === 'obs') {
       state.data.obs = pular ? null : text;
+      const _uVis = await getUsuarioByChatId(chatId);
       const nv = {
-        id: gerarId(), cliente_id: state.data.clienteId, cliente_nome: state.data.clienteNome,
+        cliente_id: state.data.clienteId, cliente_nome: state.data.clienteNome,
         imovel: state.data.imovel||null, data: state.data.data, obs: state.data.obs||null,
+        user_id: _uVis ? _uVis.id : null,
       };
       const { error } = await supabase.from('visitas').insert([nv]);
-      if (error) return sendMenu(chatId, `❌ Erro ao salvar: ${error.message}`);
+      if (error) return sendMenu(chatId, `❌ Erro ao salvar visita: ${error.message}`);
       const dtStr = new Date(state.data.data+'T12:00:00').toLocaleDateString('pt-BR');
       const title = encodeURIComponent(`Visita: ${state.data.clienteNome}${state.data.imovel?' — '+state.data.imovel:''}`);
       const gd    = state.data.data.replace(/-/g,'');
